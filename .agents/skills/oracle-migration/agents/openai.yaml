@@ -1,0 +1,4 @@
+interface:
+  display_name: "Oracle Migration"
+  short_description: "Migrate legacy code against an executable oracle"
+  default_prompt: "Use $oracle-migration to migrate one bounded legacy routine and verify its behavior against the original executable."

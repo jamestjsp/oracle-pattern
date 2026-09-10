@@ -1,50 +1,40 @@
 # Oracle Pattern
 
-A skill and playbook project demonstrating how to migrate selected legacy numerical subroutines to Go, using the original implementation as an executable behavioral oracle.
+Migrate legacy code by running the original and replacement side by side. Battle-tested code is executable documentation: preserve its observable behavior, investigate discrepancies, and retain replayable evidence.
 
-The reference is [SLICOT](https://github.com/SLICOT/SLICOT-Reference), included as a pinned Git submodule at `reference/SLICOT-Reference`. The planned Go implementation will use Gonum as its BLAS/LAPACK provider.
+This repository contains a reusable agent skill, a migration playbook, and a working SLICOT-to-Go pilot. The primary acceptance system executes the original Fortran on every case; it does not derive expected answers from the rewrite.
 
-## Demonstration reference
+## Start here
 
-[Claude Code modernizes a legacy COBOL codebase](https://youtu.be/OwMu0pyYZBc) is the user-selected reference for developing the skill and playbook. This project applies the legacy-modernization theme to selected SLICOT subroutines and a Go/Gonum replacement.
+- [Oracle migration skill](.agents/skills/oracle-migration/SKILL.md) — discoverable locally as `$oracle-migration`.
+- [Migration playbook](.agents/skills/oracle-migration/references/playbook.md) — discovery, reference build, contracts, comparisons, triage, and acceptance.
+- [MB01UD contract](docs/mb01ud-contract.md) — scope, API mapping, numerical domain, and comparison policy.
+- [Acceptance evidence](docs/acceptance.md) — trial results, skill refinements, and limitations.
 
-The video transcript has not yet been reviewed; the workflow below records this project's proposed approach, not a verified summary of the video.
+## Working pilot
 
-## Principle
+[SLICOT MB01UD](reference/SLICOT-Reference/src/MB01UD.f) multiplies a general matrix by an upper Hessenberg matrix, on either side and with optional transpose. Its Go translation is [`hessenberg.Product`](hessenberg/product.go), using Gonum BLAS. Gonum is the intended BLAS/LAPACK provider; this particular routine requires BLAS only in Go.
 
-Battle-tested code is executable documentation. Run the original and replacement implementations on the same inputs, compare their observable behavior, and retain reproducible evidence before accepting a migration.
-
-The demonstration targets migrations where tests or documentation are insufficient. SLICOT itself includes documentation and example programs; these complement the executable reference.
-
-## Planned oracle workflow
-
-1. Select a small set of subroutines and trace their dependencies, argument contracts, workspace requirements, and failure behavior.
-2. Build the pinned Fortran reference with a recorded compiler and BLAS/LAPACK backend.
-3. Define a shared case format and separate adapters for the reference and Go implementation, preserving input copies where routines overwrite arguments.
-4. Execute both implementations on identical deterministic cases, including boundary, singular, ill-conditioned, and invalid-input cases where the reference defines behavior.
-5. Compare status codes, output shapes, mutations, and numerical results with explicitly justified tolerances. Use residuals and mathematical invariants for outputs that are not unique, such as eigenvectors and factorizations.
-6. Save inputs, seeds, upstream commit, build configuration, outputs, and comparison diagnostics. Preserve mismatches as replayable regression cases.
-7. Document intentional differences and require explained discrepancies before accepting a migrated routine.
-
-The primary acceptance mechanism will be a runnable side-by-side oracle system, rather than a separately hand-authored expected-output suite. Persistent tests for adapters and comparison logic will guard the oracle infrastructure itself. Agreement with the reference establishes behavioral parity, not proof that the reference is mathematically correct.
-
-## Clone
+The [oracle runner](oracle/run.py) builds the pinned Fortran source against OpenBLAS and builds the Go candidate independently. It sends both the same logical matrices, checks numerical results, statuses, restored inputs, and physical padding, then saves full replayable reports. A small persistent harness test set anchors the adapters and checks the comparator; three compiled wrong candidates must be rejected.
 
 ```sh
 git clone --recurse-submodules https://github.com/jamestjsp/oracle-pattern.git
 cd oracle-pattern
+make verify
 ```
 
-For an existing checkout:
+Prerequisites: Go 1.24+, Python 3.10+, gfortran, Make, and LP64 OpenBLAS with BLAS/LAPACK. The runner discovers an existing Homebrew or pkg-config OpenBLAS, or uses the system linker. Set `ORACLE_BLAS_LIBS` when a custom library path is needed. Python's oracle code uses only the standard library. See the playbook for individual commands and toolchain details.
+
+For an existing checkout, initialize the reference with `git submodule update --init --recursive`. Reports and binaries are written under ignored `artifacts/`. Replay one stored input against freshly built binaries:
 
 ```sh
-git submodule update --init --recursive
+uv run python3 oracle/run.py --replay artifacts/acceptance.json --case asymmetric-LT --report artifacts/replay.json
 ```
 
-## Status
+## Reference and scope
 
-Repository bootstrap only: the reference is pinned, but subroutines have not yet been selected and the skill, playbook, Go implementation, and executable oracle harness remain to be built.
+The user-selected [Anthropic video, Claude Code modernizes a legacy COBOL codebase](https://youtu.be/OwMu0pyYZBc), provides the modernization inspiration. Its public description was reviewed; this repository's numerical oracle procedure comes from the actual pilot, not a claimed full video transcript.
 
-## Reference license
+[SLICOT](https://github.com/SLICOT/SLICOT-Reference) is pinned as the Git submodule `reference/SLICOT-Reference`. It has documentation and examples; these supplement its executable behavior. The skill also applies when such supporting material is sparse.
 
-SLICOT retains its upstream BSD-3-Clause license in `reference/SLICOT-Reference/LICENSE`. Preserve applicable upstream notices when translating or redistributing its code.
+Acceptance covers one routine and the documented finite-input domain on the recorded platform. It is not a complete SLICOT migration, proof that the reference has no bugs, or a performance claim. Source attribution and upstream redistribution terms are retained in [NOTICE](NOTICE) and [LICENSE-SLICOT](LICENSE-SLICOT).

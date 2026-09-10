@@ -1,0 +1,5 @@
+hessenberg/product.go is derived from SLICOT MB01UD, by V. Sima (January 1999).
+Copyright (c) 1996-2026, The SLICOT Team. All rights reserved.
+The upstream BSD-3-Clause terms are reproduced in LICENSE-SLICOT.
+Reference commit: 4a752c35ab540ce6291be8590dd7ed47086fe4ff.
+Gonum is a separate dependency with its own license in its module distribution.
