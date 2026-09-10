@@ -1,0 +1,51 @@
+{
+  "schema": 2,
+  "kind": "legacy-baseline",
+  "routine": "MB01UD",
+  "policy": "mb01ud-float64-v1",
+  "seeds": [
+    20260910,
+    20260911
+  ],
+  "random_cases_per_seed": 400,
+  "count": 1405,
+  "calls_sha256": "ece599f3cf93e26c3f5892b314a567a296835638160a22e486963c4afb84239d",
+  "reference": {
+    "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+    "python": "3.13.5",
+    "fortran": "GNU Fortran (Homebrew GCC 15.2.0_1) 15.2.0",
+    "backend": "Homebrew OpenBLAS; see linked-library hashes",
+    "linked_libraries": "/var/folders/rv/ppsptyvn01nc6n8b6n93xm9c0000gn/T/oracle-capture-04tu5deu/mb01ud-reference:\n\t/opt/homebrew/opt/openblas/lib/libopenblas.0.dylib (compatibility version 0.0.0, current version 0.0.0)\n\t/opt/homebrew/opt/gcc/lib/gcc/current/libgfortran.5.dylib (compatibility version 6.0.0, current version 6.0.0)\n\t/opt/homebrew/opt/gcc/lib/gcc/current/libquadmath.0.dylib (compatibility version 1.0.0, current version 1.0.0)\n\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1356.0.0)\n",
+    "linked_sha256": {
+      "/opt/homebrew/Cellar/openblas/0.3.33/lib/libopenblasp-r0.3.33.dylib": "578194952493651b19d2fc1db4bf6ec5b8506b8d4cd6e35054eb62b0ca79d966",
+      "/opt/homebrew/Cellar/gcc/15.2.0_1/lib/gcc/current/libgfortran.5.dylib": "624e083bf9ebdcd8c6713ef8adaf1aa49ec2a1756cd0dbaed553fd48fc3e6950",
+      "/opt/homebrew/Cellar/gcc/15.2.0_1/lib/gcc/current/libquadmath.0.dylib": "773034db811835ca98358409e647c46a97cb9dc3f4fbb6956c858e5a31cdf580"
+    },
+    "reference_commit": "4a752c35ab540ce6291be8590dd7ed47086fe4ff",
+    "project_commit": "05aa137fbd428f8a3e572783ef48204823bdd192",
+    "project_dirty": true,
+    "compile_command": [
+      "/opt/homebrew/bin/gfortran",
+      "-O2",
+      "-fcheck=all",
+      "-fno-fast-math",
+      "/Users/josephj/workspace/oracle-pattern/oracle/reference/driver.f90",
+      "/Users/josephj/workspace/oracle-pattern/reference/SLICOT-Reference/src/MB01UD.f",
+      "-L/opt/homebrew/opt/openblas/lib",
+      "-lopenblas",
+      "-o",
+      "/var/folders/rv/ppsptyvn01nc6n8b6n93xm9c0000gn/T/oracle-capture-04tu5deu/mb01ud-reference"
+    ],
+    "threads": {
+      "OPENBLAS_NUM_THREADS": "1",
+      "OMP_NUM_THREADS": "1"
+    },
+    "source_sha256": {
+      "reference/SLICOT-Reference/src/MB01UD.f": "a0f37f9f48c58b551d3517afb509167023361c7bfb8c56d2672c87cca4556dc1",
+      "oracle/reference/driver.f90": "578837c0d61169b1e59208bbca9b2302d6d5b3e5679fe4da7b674a32f6c50753",
+      "oracle/run.py": "99ff46296f1fb906361bce4c62fbefdad497bf175295f54d36a290287839d494",
+      "oracle/cases.json": "af847d842ca196d1db5b505e46a1fc7475cfa6ed720f6f8b09dff5a6cad90548"
+    },
+    "binary_sha256": "dac1f3973a8b5fb89b4e5b46c3404dbb961661ebc15a70e31d6e4b44ac83926c"
+  }
+}

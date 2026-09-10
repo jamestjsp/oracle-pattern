@@ -1,4 +1,4 @@
 interface:
   display_name: "Oracle Migration"
-  short_description: "Migrate legacy code against an executable oracle"
-  default_prompt: "Use $oracle-migration to migrate one bounded legacy routine and verify its behavior against the original executable."
+  short_description: "Capture legacy calls and replay the replacement"
+  default_prompt: "Use $oracle-migration to capture a versioned legacy baseline and verify a replacement against its recorded behavior."

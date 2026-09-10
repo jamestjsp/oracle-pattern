@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Build, compare, and replay the independent MB01UD oracle."""
+"""Capture legacy calls once; verify Go offline; audit the reference explicitly."""
 import argparse
+import gzip
 import hashlib
 import json
 import math
@@ -12,11 +13,14 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 GUARD = -987654321.125
 EPS = sys.float_info.epsilon
-SCHEMA = 1
+SCHEMA = 2
+POLICY = "mb01ud-float64-v1"
+BASELINE = ROOT / "oracle/baselines/mb01ud-v1"
 
 
 def invoke(args, *, data=None, cwd=ROOT):
@@ -31,12 +35,11 @@ def digest(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def build(build_dir):
+def build_reference(build_dir):
     build_dir.mkdir(parents=True, exist_ok=True)
     fc = shutil.which(os.environ.get("FC", "gfortran"))
-    go = shutil.which("go")
-    if not fc or not go:
-        raise RuntimeError("Go and gfortran are required; the oracle cannot be skipped")
+    if not fc:
+        raise RuntimeError("gfortran is required for capture/audit, not offline verify")
     src = ROOT / "reference/SLICOT-Reference/src/MB01UD.f"
     if not src.exists():
         raise RuntimeError("run git submodule update --init --recursive")
@@ -57,10 +60,8 @@ def build(build_dir):
             libs = ["-lopenblas"]
             backend = "system OpenBLAS; see linked-library hashes"
     reference = build_dir / "mb01ud-reference"
-    candidate = build_dir / "mb01ud-go"
     compile_cmd = [fc, "-O2", "-fcheck=all", "-fno-fast-math", str(ROOT / "oracle/reference/driver.f90"), str(src), *libs, "-o", str(reference)]
     invoke(compile_cmd)
-    invoke([go, "build", "-trimpath", "-o", str(candidate), "./cmd/mb01ud-go"])
     link_tool = "otool" if sys.platform == "darwin" else "ldd"
     link_cmd = [link_tool, "-L", str(reference)] if sys.platform == "darwin" else [link_tool, str(reference)]
     linked = invoke(link_cmd)
@@ -69,24 +70,39 @@ def build(build_dir):
         p = Path(token)
         if token.startswith("/") and p.is_file():
             linked_hashes[str(p.resolve())] = digest(p)
-    tracked = [src, ROOT / "oracle/reference/driver.f90", ROOT / "oracle/run.py", ROOT / "oracle/test_oracle.py", ROOT / "oracle/cases.json", ROOT / "go.mod", ROOT / "go.sum"]
-    tracked += sorted((ROOT / "hessenberg").glob("*.go"))
-    tracked += sorted((ROOT / "cmd/mb01ud-go").glob("*.go"))
-    return reference, candidate, {
-        "platform": platform.platform(), "machine": platform.machine(),
+    if invoke(["git", "-C", str(src.parent.parent), "status", "--porcelain"]):
+        raise RuntimeError("reference submodule is dirty")
+    return reference, {
+        "platform": platform.platform(), "python": platform.python_version(),
         "fortran": invoke([fc, "--version"]).splitlines()[0],
-        "go": invoke([go, "version"]).strip(),
-        "go_environment": json.loads(invoke([go, "env", "-json", "GOOS", "GOARCH", "CGO_ENABLED", "GOFLAGS", "GOTOOLCHAIN", "GOAMD64", "GOARM64"])),
-        "gonum": json.loads(invoke([go, "list", "-m", "-json", "gonum.org/v1/gonum"])),
         "backend": backend, "linked_libraries": linked, "linked_sha256": linked_hashes,
         "reference_commit": invoke(["git", "-C", str(src.parent.parent), "rev-parse", "HEAD"]).strip(),
-        "reference_dirty": bool(invoke(["git", "-C", str(src.parent.parent), "status", "--porcelain"])),
         "project_commit": invoke(["git", "rev-parse", "HEAD"]).strip(),
         "project_dirty": bool(invoke(["git", "status", "--porcelain"])),
         "compile_command": compile_cmd,
         "threads": {"OPENBLAS_NUM_THREADS": "1", "OMP_NUM_THREADS": "1"},
-        "source_sha256": {str(p.relative_to(ROOT)): digest(p) for p in tracked},
-        "binary_sha256": {"reference": digest(reference), "candidate": digest(candidate)},
+        "source_sha256": {str(p.relative_to(ROOT)): digest(p) for p in (src, ROOT/"oracle/reference/driver.f90", ROOT/"oracle/run.py", ROOT/"oracle/cases.json")},
+        "binary_sha256": digest(reference),
+    }
+
+
+def build_candidate(build_dir):
+    build_dir.mkdir(parents=True, exist_ok=True)
+    go = shutil.which("go")
+    if not go:
+        raise RuntimeError("Go is required for verify")
+    candidate = build_dir / "mb01ud-go"
+    invoke([go, "build", "-trimpath", "-o", str(candidate), "./cmd/mb01ud-go"])
+    sources = [ROOT/"go.mod", ROOT/"go.sum", ROOT/"oracle/run.py"]
+    sources += sorted((ROOT/"hessenberg").glob("*.go"))
+    sources += sorted((ROOT/"cmd/mb01ud-go").glob("*.go"))
+    return candidate, {
+        "platform": platform.platform(), "python": platform.python_version(),
+        "go": invoke([go,"version"]).strip(),
+        "go_environment": json.loads(invoke([go,"env","-json","GOOS","GOARCH","CGO_ENABLED","GOFLAGS","GOTOOLCHAIN"])),
+        "gonum": json.loads(invoke([go,"list","-m","-json","gonum.org/v1/gonum"])),
+        "source_sha256": {str(p.relative_to(ROOT)):digest(p) for p in sources},
+        "binary_sha256": digest(candidate),
     }
 
 
@@ -241,12 +257,17 @@ def compare(c,ref,got):
     return failures,worst
 
 
-def run_case(c,reference,candidate):
-    validate_case(c)
-    ref = parse_reference(invoke([str(reference)],data=reference_input(c)),c)
-    got = json.loads(invoke([str(candidate)],data=json.dumps(c)))
-    failures,ratio = compare(c,ref,got)
-    return dict(case=c,reference=ref,candidate=got,failures=failures,max_error_over_bound=ratio)
+def observe_reference(c, executable):
+    return parse_reference(invoke([str(executable)],data=reference_input(c)),c)
+
+
+def verify_call(record, executable, *, audit=False):
+    c,expected = record["case"],record["expected"]
+    actual = observe_reference(c,executable) if audit else json.loads(invoke([str(executable)],data=json.dumps(c)))
+    failures,ratio = compare(c,expected,actual)
+    if audit and actual.get("handler") != expected["handler"]:
+        failures.append("reference error handler changed")
+    return dict(case_id=c["id"],trace=record["trace"],actual=actual,failures=failures,max_error_over_bound=ratio)
 
 
 def json_safe(value):
@@ -259,67 +280,120 @@ def json_safe(value):
     return value
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--seed",type=int,default=20260910,help="generated-case seed; replay retains its original seed")
-    parser.add_argument("--random-cases",type=int,default=400)
-    parser.add_argument("--report",type=Path,default=ROOT/"artifacts/report.json")
-    parser.add_argument("--cases",type=Path,help="run exactly the cases in this JSON array")
-    parser.add_argument("--replay",type=Path,help="replay inputs from a previous report with current binaries")
-    parser.add_argument("--case",help="select one case ID")
-    args = parser.parse_args()
-    if args.random_cases < 0 or (args.cases and args.replay):
-        parser.error("use a nonnegative count and choose either --cases or --replay")
-    if args.replay:
-        prior = json.loads(args.replay.read_text())
-        if prior.get("schema") != SCHEMA:
-            parser.error("unsupported replay schema")
-        cases = [x["case"] for x in prior["results"]]
-        campaign_seed = prior.get("seed")
-        origin = dict(kind="replay",report_sha256=digest(args.replay),source_corpus_sha256=prior["corpus_sha256"])
-    elif args.cases:
-        cases = json.loads(args.cases.read_text())
-        campaign_seed = None
-        origin = dict(kind="imported",cases_sha256=digest(args.cases))
-    else:
-        cases = corpus(args.seed,args.random_cases)
-        campaign_seed = args.seed
-        origin = dict(kind="generated")
-    if args.case:
-        cases = [c for c in cases if c["id"] == args.case]
-    if not cases or len({c["id"] for c in cases}) != len(cases):
-        parser.error("cases must be nonempty with unique IDs")
-    for c in cases:
-        validate_case(c)
-    reference,candidate,provenance = build(ROOT/"artifacts/build")
-    if provenance["reference_dirty"]:
-        raise RuntimeError("reference submodule is dirty; restore or explicitly version reference changes")
-    results = []
-    for c in cases:
-        try:
-            result = run_case(c,reference,candidate)
-        except (RuntimeError,ValueError,KeyError,TypeError,OverflowError,subprocess.TimeoutExpired) as e:
-            result = dict(case=c,failures=[f"infrastructure: {e}"],max_error_over_bound=None)
-        results.append(result)
-        if result["failures"]:
-            print(f"FAIL {c['id']}: {result['failures'][0]}",file=sys.stderr)
-    failed = sum(bool(r["failures"]) for r in results)
-    report = dict(schema=SCHEMA,seed=campaign_seed,origin=origin,provenance=provenance,
-                  comparison="64*epsilon*max(1,k)*abs(alpha)*sum(abs(product_terms)) + 16*smallest_subnormal; alpha=0 exact",
-                  corpus_sha256=hashlib.sha256(json.dumps(cases,sort_keys=True).encode()).hexdigest(),
-                  summary=dict(cases=len(results),passed=len(results)-failed,failed=failed,
-                               max_error_over_bound=max((r["max_error_over_bound"] or 0 for r in results),default=0)),
-                  results=results)
-    args.report.parent.mkdir(parents=True,exist_ok=True)
-    args.report.write_text(json.dumps(json_safe(report),indent=2,allow_nan=False)+"\n")
-    print(json.dumps(report["summary"]))
-    print(f"Report: {args.report}")
+def select(records, case_id):
+    selected = [r for r in records if r["case"]["id"] == case_id] if case_id else records
+    if not selected:
+        raise ValueError("no matching calls; an empty verification is not a pass")
+    return selected
+
+
+def load_baseline(path):
+    manifest = json.loads((path/"manifest.json").read_text())
+    if manifest.get("schema") != SCHEMA or manifest.get("kind") != "legacy-baseline" or manifest.get("policy") != POLICY:
+        raise ValueError("unsupported baseline schema or comparison policy")
+    calls = path/"calls.jsonl.gz"
+    if digest(calls) != manifest["calls_sha256"]:
+        raise ValueError("baseline calls checksum mismatch")
+    with gzip.open(calls,"rt") as f:
+        records = [json.loads(line) for line in f]
+    if not records or len(records) != manifest["count"] or len({r["case"]["id"] for r in records}) != len(records):
+        raise ValueError("baseline must contain the declared number of unique calls")
+    for r in records:
+        validate_case(r["case"])
+        if r["trace"] != trace(r["case"]):
+            raise ValueError("invalid MB01UD harness trace identity")
+        failures,_ = compare(r["case"],r["expected"],r["expected"])
+        if failures:
+            raise ValueError("invalid captured observation: " + "; ".join(failures))
+    return manifest,records
+
+
+def trace(c):
+    return dict(scenario=c["id"],caller="oracle/reference/driver.f90",callee="MB01UD",invocation=1)
+
+
+def capture(output,seeds,count,case_id=None):
+    if output.exists():
+        raise FileExistsError("baseline already exists; choose a new version directory")
+    cases = {}
+    for seed in seeds:
+        for c in corpus(seed,count):
+            cases.setdefault(c["id"],c)
+    selected = select([dict(case=c) for c in cases.values()],case_id)
+    records=[]
+    with tempfile.TemporaryDirectory(prefix="oracle-capture-") as work:
+        reference,provenance = build_reference(Path(work))
+        for r in selected:
+            c=r["case"]
+            validate_case(c)
+            expected=observe_reference(c,reference)
+            failures,_=compare(c,expected,expected)
+            if failures:
+                raise ValueError(f"reference capture failed for {c['id']}: {failures}")
+            records.append(dict(trace=trace(c),case=c,expected=expected))
+    output.mkdir(parents=True,exist_ok=False)
+    payload="".join(json.dumps(r,separators=(",",":"),allow_nan=False)+"\n" for r in records).encode()
+    calls=output/"calls.jsonl.gz"
+    calls.write_bytes(gzip.compress(payload,mtime=0))
+    manifest=dict(schema=SCHEMA,kind="legacy-baseline",routine="MB01UD",policy=POLICY,seeds=seeds,
+                  random_cases_per_seed=count,count=len(records),calls_sha256=digest(calls),reference=provenance)
+    (output/"manifest.json").write_text(json.dumps(manifest,indent=2)+"\n")
+    print(f"Captured {len(records)} calls: {output}")
+
+
+def evaluate(baseline,report,case_id=None,*,audit=False):
+    manifest,records=load_baseline(baseline)
+    records=select(records,case_id)
+    if report.resolve().is_relative_to(baseline.resolve()):
+        raise ValueError("report must not overwrite any part of the baseline")
+    results=[]
+    with tempfile.TemporaryDirectory(prefix="oracle-verify-") as work:
+        executable,provenance=(build_reference if audit else build_candidate)(Path(work))
+        for record in records:
+            try:
+                result=verify_call(record,executable,audit=audit)
+            except (RuntimeError,ValueError,KeyError,TypeError,OverflowError,OSError,subprocess.TimeoutExpired) as e:
+                result=dict(case_id=record["case"]["id"],trace=record["trace"],failures=[f"infrastructure: {e}"],max_error_over_bound=None)
+            results.append(result)
+            if result["failures"]:
+                print(f"FAIL {result['case_id']}: {result['failures'][0]}",file=sys.stderr)
+    failed=sum(bool(r["failures"]) for r in results)
+    result=dict(schema=SCHEMA,kind="audit" if audit else "verification",policy=POLICY,
+                baseline=dict(manifest_sha256=digest(baseline/"manifest.json"),calls_sha256=manifest["calls_sha256"],seeds=manifest["seeds"]),
+                build=provenance,summary=dict(calls=len(results),passed=len(results)-failed,failed=failed,
+                    max_error_over_bound=max((r["max_error_over_bound"] or 0 for r in results),default=0)),results=results)
+    report.parent.mkdir(parents=True,exist_ok=True)
+    report.write_text(json.dumps(json_safe(result),indent=2,allow_nan=False)+"\n")
+    print(json.dumps(result["summary"]))
+    print(f"Report: {report}")
     return int(bool(failed))
+
+
+def main():
+    parser=argparse.ArgumentParser(description=__doc__)
+    commands=parser.add_subparsers(dest="command",required=True)
+    record=commands.add_parser("capture",help="create a new legacy-only baseline; never overwrite")
+    record.add_argument("--output",type=Path,required=True)
+    record.add_argument("--seed",type=int,action="append",help="repeat for multiple seeds")
+    record.add_argument("--random-cases",type=int,default=400)
+    record.add_argument("--case",help="capture one matching case")
+    for command in ("verify","audit"):
+        sub=commands.add_parser(command,help="run Go offline" if command=="verify" else "recheck the legacy executable")
+        sub.add_argument("--baseline",type=Path,default=BASELINE)
+        sub.add_argument("--case",help="replay one captured call")
+        sub.add_argument("--report",type=Path,default=ROOT/f"artifacts/{command}.json")
+    args=parser.parse_args()
+    if args.command=="capture":
+        if args.random_cases<0:
+            parser.error("random case count must be nonnegative")
+        capture(args.output,args.seed or [20260910,20260911],args.random_cases,args.case)
+        return 0
+    return evaluate(args.baseline,args.report,args.case,audit=args.command=="audit")
 
 
 if __name__ == "__main__":
     try:
         sys.exit(main())
-    except (RuntimeError,ValueError,OSError,subprocess.TimeoutExpired) as exc:
+    except (RuntimeError,ValueError,KeyError,TypeError,OSError,OverflowError,subprocess.TimeoutExpired) as exc:
         print(f"oracle: {exc}",file=sys.stderr)
         sys.exit(2)

@@ -1,4 +1,8 @@
 import copy
+import gzip
+import os
+import shutil
+from unittest import mock
 import json
 import math
 from pathlib import Path
@@ -74,7 +78,9 @@ class ExecutableTests(unittest.TestCase):
     def setUpClass(cls):
         cls.temp=tempfile.TemporaryDirectory(prefix="oracle-validation-")
         cls.build=Path(cls.temp.name)
-        cls.reference,cls.candidate,_=oracle.build(cls.build)
+        cls.candidate,_=oracle.build_candidate(cls.build)
+        cls.manifest,cls.records=oracle.load_baseline(oracle.BASELINE)
+        cls.by_id={r["case"]["id"]:r for r in cls.records}
         cls.cases=json.loads((oracle.ROOT / "oracle/cases.json").read_text())
 
     @classmethod
@@ -86,11 +92,12 @@ class ExecutableTests(unittest.TestCase):
                   "RN":[-8,-9.5,-14.5,-32,31.5,71],"RT":[2,-14.5,10.5,-17,-23.5,36]}
         for c in self.cases[:6]:
             with self.subTest(case=c["id"]):
-                result=oracle.run_case(c,self.reference,self.candidate)
+                record=self.by_id[c["id"]]
+                result=oracle.verify_call(record,self.candidate)
                 self.assertEqual(result["failures"],[])
                 key=c["side"]+("T" if c["trans"]=="C" else c["trans"])
-                self.assertEqual(list(map(float,result["reference"]["b"])),expected[key])
-                self.assertEqual(list(map(float,result["candidate"]["b"])),expected[key])
+                self.assertEqual(list(map(float,record["expected"]["b"])),expected[key])
+                self.assertEqual(list(map(float,result["actual"]["b"])),expected[key])
 
     def test_rejects_real_candidate_mutations(self):
         source=oracle.ROOT / "hessenberg/product.go"
@@ -109,34 +116,74 @@ class ExecutableTests(unittest.TestCase):
                 overlay.write_text(json.dumps({"Replace":{str(source):str(mutated)}}))
                 binary=self.build / name
                 oracle.invoke(["go","build","-overlay",str(overlay),"-o",str(binary),"./cmd/mb01ud-go"])
-                results=[oracle.run_case(c,self.reference,binary) for c in self.cases[:6]]
+                results=[oracle.verify_call(self.by_id[c["id"]],binary) for c in self.cases[:6]]
                 self.assertTrue(any(r["failures"] for r in results),f"oracle accepted {name}")
 
-    def test_cli_replay_preserves_exact_inputs_and_rebuilds(self):
-        first=self.build / "first.json"
-        second=self.build / "replayed.json"
-        oracle.invoke([sys.executable,"oracle/run.py","--seed","20260911","--random-cases","0","--case",self.cases[1]["id"],"--report",str(first)])
-        oracle.invoke([sys.executable,"oracle/run.py","--replay",str(first),"--case",self.cases[1]["id"],"--report",str(second)])
-        a,b=json.loads(first.read_text()),json.loads(second.read_text())
-        self.assertEqual(a["summary"]["failed"],0)
-        self.assertEqual(b["summary"]["failed"],0)
-        self.assertEqual(a["seed"],b["seed"])
-        self.assertEqual(b["origin"]["kind"],"replay")
-        self.assertEqual(b["origin"]["report_sha256"],oracle.digest(first))
-        self.assertEqual(a["corpus_sha256"],b["corpus_sha256"])
-        self.assertEqual(a["results"][0]["case"],b["results"][0]["case"])
-        self.assertEqual(a["results"][0]["reference"],b["results"][0]["reference"])
+    def test_cli_offline_replay_keeps_baseline_identity(self):
+        report=self.build / "replay.json"
+        before={p.name:oracle.digest(p) for p in oracle.BASELINE.iterdir()}
+        with mock.patch.dict(os.environ,{"FC":"/missing/fortran","ORACLE_BLAS_LIBS":"-lmissing"}):
+            oracle.invoke([sys.executable,"oracle/run.py","verify","--case","asymmetric-LT","--report",str(report)])
+        result=json.loads(report.read_text())
+        self.assertEqual(result["summary"]["failed"],0)
+        self.assertEqual(result["baseline"]["seeds"],self.manifest["seeds"])
+        self.assertEqual(result["baseline"]["manifest_sha256"],oracle.digest(oracle.BASELINE/"manifest.json"))
+        self.assertEqual(result["baseline"]["calls_sha256"],self.manifest["calls_sha256"])
+        self.assertEqual(before,{p.name:oracle.digest(p) for p in oracle.BASELINE.iterdir()})
         with self.assertRaises(RuntimeError):
-            oracle.invoke([sys.executable,"oracle/run.py","--replay",str(first),"--case","absent","--report",str(second)])
+            oracle.invoke([sys.executable,"oracle/run.py","verify","--case","absent","--report",str(report)])
 
     def test_invalid_contract_and_padding(self):
-        for bad in (1,2,3,4,7,9,11):
-            c=oracle.make_case(f"invalid-{bad}")
-            c["invalid"]=bad
-            result=oracle.run_case(c,self.reference,self.candidate)
+        records=[r for r in self.records if r["case"]["invalid"]]
+        self.assertEqual(len(records),21)
+        for record in records:
+            result=oracle.verify_call(record,self.candidate)
             self.assertEqual(result["failures"],[])
-            self.assertEqual(result["reference"]["info"],-bad)
-            self.assertEqual(result["reference"]["handler"],bad)
+            self.assertEqual(record["expected"]["handler"],record["case"]["invalid"])
+
+    def test_verification_never_builds_reference(self):
+        with mock.patch.object(oracle,"build_reference",side_effect=AssertionError("legacy build attempted")):
+            self.assertEqual(oracle.evaluate(oracle.BASELINE,self.build/"offline.json","asymmetric-LN"),0)
+
+
+class BaselineTests(unittest.TestCase):
+    def test_missing_corrupt_and_incompatible_baselines_fail(self):
+        with tempfile.TemporaryDirectory() as work:
+            path=Path(work)/"baseline"
+            with self.assertRaises(FileNotFoundError):
+                oracle.load_baseline(path)
+            shutil.copytree(oracle.BASELINE,path)
+            calls=path/"calls.jsonl.gz"
+            calls.write_bytes(calls.read_bytes()+b"corruption")
+            with self.assertRaisesRegex(ValueError,"checksum"):
+                oracle.load_baseline(path)
+            shutil.copyfile(oracle.BASELINE/"calls.jsonl.gz",calls)
+            manifest=json.loads((path/"manifest.json").read_text())
+            manifest["policy"]="unreviewed-tolerance"
+            (path/"manifest.json").write_text(json.dumps(manifest))
+            with self.assertRaisesRegex(ValueError,"policy"):
+                oracle.load_baseline(path)
+
+    def test_empty_duplicate_and_invalid_observations_fail(self):
+        manifest,records=oracle.load_baseline(oracle.BASELINE)
+        for bad in ([],[records[0],records[0]],copy.deepcopy(records[:1])):
+            if len(bad)==1:
+                bad[0]["expected"]["b"][0]="nan"
+            with self.subTest(count=len(bad)), tempfile.TemporaryDirectory() as work:
+                path=Path(work)
+                payload="".join(json.dumps(r)+"\n" for r in bad).encode()
+                (path/"calls.jsonl.gz").write_bytes(gzip.compress(payload))
+                m=dict(manifest,count=len(bad),calls_sha256=oracle.digest(path/"calls.jsonl.gz"))
+                (path/"manifest.json").write_text(json.dumps(m))
+                with self.assertRaises(ValueError):
+                    oracle.load_baseline(path)
+
+    def test_capture_and_reports_cannot_overwrite_baseline(self):
+        with mock.patch.object(oracle,"build_reference",side_effect=AssertionError("should fail before building")):
+            with self.assertRaises(FileExistsError):
+                oracle.capture(oracle.BASELINE,[42],0)
+        with self.assertRaisesRegex(ValueError,"overwrite"):
+            oracle.evaluate(oracle.BASELINE,oracle.BASELINE/"manifest.json")
 
 
 if __name__ == "__main__":

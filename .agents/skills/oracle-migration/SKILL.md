@@ -1,37 +1,42 @@
 ---
 name: oracle-migration
-description: Migrate a bounded legacy routine or feature by executing the original and replacement on identical inputs, comparing observable behavior, and retaining replayable evidence. Use for legacy rewrites with weak tests or documentation and for diagnosing migration mismatches; not for ordinary greenfield implementation or performance-only tuning.
+description: Migrate legacy routines or features using versioned recordings of their inputs, outputs, and state changes as an executable contract. Use for rewrites with weak tests or documentation, caller-boundary capture, and numerical migration mismatches; not for greenfield implementation or performance-only tuning.
 ---
 
 # Oracle Migration
 
-Treat the runnable legacy implementation as behavioral evidence. Translate the chosen feature into an idiomatic replacement while preserving the agreed observable contract. Documentation and generated expected values cannot substitute for executing the original.
+Capture the legacy system's behavior once for each approved corpus version. Execute the replacement against those stored observations during everyday verification. Keep the legacy build available for new captures and explicit audits; it need not run on every verification.
 
-Read [the playbook](references/playbook.md) when planning a migration, building an oracle, choosing numerical comparisons, or evaluating acceptance. It includes the runnable SLICOT-to-Go pilot and an acceptance checklist.
+Read [the playbook](references/playbook.md) for capture, offline replay, mismatch triage, and the SLICOT example.
 
 ## Establish the boundary
 
-- Inspect the exact legacy source revision, callers, dependency closure, existing examples, and build requirements. Select a routine small enough to cover fully but rich enough to expose meaningful behavior. Do not select a larger migration merely because its syntax looks simple.
-- Record the supported domain, API/ABI mapping, input ownership, mutation, aliasing, error behavior, workspace, and intentional differences before translating. Decide which outputs have unique values and which admit equivalent representations.
-- Follow the user's scope and existing authorization. Creating this skill or running a local oracle does not authorize publishing, changing upstream source, installing system packages, or expanding the migration.
+Inspect the pinned source, callers, dependencies, and available documentation. Define the supported domain, state, mutation, aliasing, errors, layout, and target API differences. Select stable migration boundaries; recording every implementation detail can constrain legitimate refactoring and overwhelm the corpus.
 
-## Build the oracle before trusting the rewrite
+Record the actual caller and scenario. Do not present synthetic harness calls as production traces. Stateful systems need initial state and ordered events, not only argument/return pairs. Preserve final scenario observations as well as useful intermediate calls.
 
-- Compile the pinned legacy source and real dependencies in a separate executable. Keep its adapter to marshalling and observations; do not reconstruct the algorithm or call the new implementation from the reference path.
-- Anchor both adapters with small independently understood asymmetric inputs. Exercise distinct storage conventions, ignored regions, padding, mutation, and error paths. A legacy error-handler observation hook is acceptable if disclosed and kept separate from computational code.
-- Drive both implementations from one serialized case. Preserve exact replay inputs, not just a seed. Exercise replay through the public command, including rejection of an unknown case; an in-memory serialization check alone does not validate replay. Check that replay preserves input provenance (including a non-default seed) while recording the new build separately. Fail on missing tools, build errors, crashes, timeouts, malformed output, missing cases, and nonfinite values outside the declared domain.
+## Capture an independent baseline
 
-## Translate and compare
+Build and run the real legacy computation. Instrument entry and exit or use a narrow adapter to capture exact inputs, outputs, statuses, and relevant state changes. Record source revision/hashes, toolchain, backend, precision, configuration, and scenario identity. Confirm adapters with independently understood asymmetric examples.
 
-- Choose a target-language API that owns layout and sequencing details without disguising intentional compatibility changes. Verify provider coverage instead of assuming a numerical library implements every legacy dependency.
-- Match statuses and structural outputs exactly. Check all observable input/output mutations and untouched regions. For floating-point results, choose bounds from operation size and scale before running the campaign; avoid global tolerances that hide small results. Use invariants/subspaces rather than raw vectors when valid results are nonunique.
-- Cover control-flow branches, quick returns, invalid inputs where safe, structure, cancellation, and scale regimes. Add deterministic generated cases after explicit edge cases. Record the domain actually covered.
-- Diagnose every mismatch as adapter, reference environment, translation, or contract/comparison behavior. Reduce it to a persistent case. Never regenerate the expected answer from the candidate or relax a bound solely to make a failure pass.
+Version the captured data separately from candidate results. Capture must not use the replacement to generate expected values, and must not overwrite an existing baseline. Store checksums and schema/comparison-policy versions. Missing or corrupt recordings must fail verification; never silently recapture them.
 
-## Acceptance and skill refinement
+Preserve actual inputs, including dimensions and initialization where relevant, rather than only random seeds. Keep protected/ignored regions observable. Add targeted boundary cases to representative caller traces because recordings cover only exercised behavior.
 
-Require: reproducible reference build; passing declared cases; unchanged protected inputs/storage; reviewed API differences; replayable reports with source/toolchain/backend identity and effective build settings; and evidence that known-bad candidates fail. Maintain runnable checks for the adapters and comparator—the differential oracle is the primary migration acceptance system, not an excuse to leave the harness unverified.
+## Replay the replacement
 
-Before completion, run the playbook against the actual pilot from a fresh build and inspect the outputs. Compare what the instructions led you to verify against the acceptance gates. Fix the narrow instruction or executable defect that the trial exposed, rerun affected gates, then document the outcome and remaining limitations. Use a fresh generated seed after repairs. Do not claim universal equivalence, independent skill-agent evaluation, or performance improvements without corresponding evidence.
+Build only the replacement and run it on recorded inputs. Compare discrete outputs and observable state exactly. For numerical outputs use justified scale-aware bounds, residuals, or invariant subspaces as appropriate; do not hide tiny wrong answers with a unit absolute tolerance floor. Reject unsupported nonfinite outputs and malformed observations.
 
-For this repository, start with `docs/mb01ud-contract.md` and `docs/acceptance.md`, resolved from the repository root. They are pilot evidence, not requirements for unrelated migrations. The reusable procedure is in the playbook above.
+Check both isolated routines and connected scenarios when migrating a system. Isolated replay diagnoses local defects; scenario replay detects integration errors and accumulated drift. Do not replace all migrated callees with recorded answers in the final system acceptance run.
+
+Reports must identify the immutable baseline and the current candidate build separately. Preserve recorded seeds, caller context, and original provenance. Verify one-call selection, unknown-call rejection, and operation without the legacy toolchain. Keep executable negative controls proving that known defects fail.
+
+## Diagnose, audit, and finish
+
+Save mismatching observations and their call IDs. Determine whether the issue is in marshalling, the translation, state/ordering, the comparison contract, or the legacy environment. Reduce failures to persistent cases. Never change expected outputs or widen tolerances merely to pass.
+
+Use a legacy audit to investigate a discrepancy or confirm a capture environment. Use a new baseline version to add coverage or adopt an intentional reference change; retain the old version's identity. Compare snapshots only within their declared numerical domain and policy.
+
+Acceptance requires a legacy-origin baseline, passing offline replay, integrity/immutability checks, detected known-bad candidates, reviewed API differences, and honest coverage limits. Exercise the procedure on a real pilot and refine only the instructions implicated by observed failures. Metadata validation alone is not a behavioral evaluation.
+
+For this repository, `docs/mb01ud-contract.md` and `docs/acceptance.md` describe the pilot. Follow the user's scope and existing authorization for installations, publication, and changes outside the migration.

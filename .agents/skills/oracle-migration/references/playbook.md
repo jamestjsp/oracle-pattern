@@ -1,118 +1,88 @@
-# Legacy migration with an executable oracle
+# Capture once, replay the rewrite
 
-The outcome is a maintainable replacement plus evidence explaining where it agrees with the legacy system. Battle-tested code is executable documentation; it is not proof that every legacy behavior is desirable or mathematically correct.
+Treat captured legacy behavior as a versioned executable contract. Ordinary verification runs the replacement against stored expected observations. Legacy execution is required to create or extend that contract, not for every development iteration.
 
-This playbook is reusable. The commands in the final section belong to the SLICOT demonstration repository; adapt the implementation language, build, case protocol, and comparisons for a different system.
+## 1. Discover and select a boundary
 
-## 1. Discover one migration boundary
+Read the source, callers, dependencies, and documentation. Choose a bounded routine or feature whose original implementation can run. Document input ownership, errors, quick returns, mutated state, ignored data, aliasing, layout, and intentional target-language API differences.
 
-Read the source and its callers. Map the routine's dependencies and the sequence of externally observable actions. Existing comments, examples, and manuals guide investigation, but confirm important claims in executable statements. A legacy codebase with documentation can still benefit from an oracle.
+Capture at useful migration boundaries. For a numerical routine this may be entry/exit arrays and status. For a credit-card batch it may include starting balances, rates, dates, input records, written records, and ending balances. For a controller it includes initial state, parameters, ordered inputs, timestep, output signals, and updated state. Record representative scenarios and add explicit edge cases; production samples alone do not cover every branch.
 
-Choose a bounded slice whose dependencies can actually run. Favor one routine with distinct branches over a large nominal feature whose dependencies must be stubbed. List inputs, outputs, mutation, initialization requirements, ignored storage, errors, quick returns, and aliasing. For numerical code also record dimensions, layout, leading dimensions, triangle conventions, workspace, overflow/underflow regimes, and nonunique outputs.
+## 2. Record the legacy system
 
-Write a small compatibility table separating preserved behavior, deliberate target-language API changes, and excluded behavior. A modern API can replace INFO and workspace arguments, but its adapter must expose enough information to compare the underlying contract. No silent “cleanup” of quirks or error ordering.
+Run the pinned original implementation with narrow entry/exit instrumentation or an adapter. Capture enough context to reproduce a call:
 
-**Gate:** the slice and accepted domain are explicit, dependencies are available, and the reference can be built without inventing its behavior.
+- Scenario, caller, callee, invocation or event order.
+- Arguments and relevant state before the call.
+- Outputs, status, mutations, and relevant state afterward.
+- Data shape, layout, precision, alias relationships, and interpretation.
+- Source revision, hashes, compiler/backend identity, configuration, and comparison-policy version.
 
-## 2. Freeze and execute the reference
+Independently check a few asymmetric examples so layout and transpose bugs cannot hide in both adapters. Observe input restoration and protected storage. Disclose error-handler hooks or other instrumentation that changes process behavior.
 
-Pin source by revision and record source hashes, compiler and flags, architecture, runtime/library identities, precision, integer ABI, and concurrency settings. Build the original computational source unchanged. Keep native calls in a separate process when that makes error containment and independence clearer.
+Write a new baseline version only after successful capture and validation. It must contain original observations, not values computed by the replacement. Keep checksums and review baseline changes as changes to the acceptance contract. Verification and audit are read-only with respect to baselines. A checksum detects corruption; version control and review establish which baseline is trusted.
 
-A wrapper may decode cases, allocate memory, call the original, observe error handlers, and serialize results. It must not reproduce the operation it is meant to observe. Disclose hooks that change process behavior, such as intercepting a terminating XERBLA handler. Build/tool failures fail acceptance; never skip the oracle silently.
+## 3. Run offline verification
 
-First run a small asymmetric case that can be checked independently. Avoid only identity, symmetric, or square inputs: they can conceal swapped dimensions, missing transpose, and reversed multiplication order. Confirm the wrapper observes modified and supposedly untouched buffers.
+Load and validate the baseline before building the candidate. Fail on missing cases, unknown policy/schema, corruption, malformed output, crashes, or timeouts. Do not auto-update expected values.
 
-**Gate:** the real reference executes known inputs, and its identity and outputs are captured.
+Run each new routine using its recorded inputs. Preserve call identity and original capture provenance in the report while recording the new candidate's build separately. Exercise replay with non-default seeds and verify that CLI defaults cannot relabel the data.
 
-## 3. Define a replayable case protocol
+Use two levels for system migrations: isolated call replay for diagnosis and full scenario replay for integration. The latter executes the connected new system; recorded callees must not replace every new computation. Caller identities support diagnosis without requiring the rewrite to retain the same internal call graph.
 
-One serialized case drives both implementations. Keep logical data separate from physical storage, and document how each adapter allocates and packs it. For numerical data, ensure serialization preserves float64 values; preserve signed zero or nonfinite categories where they matter. Retain the actual generated input with the seed and generator identity.
+## 4. Compare the observable contract
 
-Poison ignored storage so accidental reads become visible. Guard padding and observe input restoration. Do not claim that guard regions prove absence of every out-of-bounds access; use bounds checks/sanitizers when appropriate. Keep undefined memory operations outside the executable corpus. Safe error probes can allocate valid buffers and then invalidate only a scalar argument that the legacy code checks before accessing memory.
-
-Treat output lengths, status fields, parse failures, subprocess failures, and timeouts as part of the protocol. Store both outputs and diagnostics even on comparison failure. Replay rebuilds current code against stored inputs; reproducing an old toolchain requires separately preserving that environment. Verify replay with a non-default seed: input provenance must survive rather than being overwritten by current CLI defaults. Record the source report identity separately from the new build identity.
-
-**Gate:** both adapters pass independent input/output anchors, and malformed or incomplete observations cannot be accepted.
-
-## 4. Translate the slice into a coherent target API
-
-Keep the algorithm and its dependencies visible during the first translation. Use the established target numerical provider for BLAS/LAPACK operations and verify the exact entrypoints and storage conventions. Do not implement new low-level kernels solely to avoid learning the provider's contract.
-
-Preserve observable semantics while removing source-language machinery callers no longer need. For example, a column-locality swap can become direct row-major indexing if the inputs are still unchanged on return. Keep any revised shape checks or safe slice validation explicit in the compatibility table.
-
-Prefer the smallest useful operation. Avoid a generic migration framework, plugin system, or public configuration surface for one pilot. Infrastructure should earn its complexity by enabling the next case, mismatch diagnosis, or replay.
-
-## 5. Choose comparisons before viewing results
-
-Use exact comparisons for discrete values, statuses, lengths, and protected storage. Numerical equality needs an operation-specific policy:
-
-| Output | Comparison |
+| Data | Comparison policy |
 | --- | --- |
-| Integer/status/records | Exact, with documented normalization only |
-| Floating-point products | Scale- and dimension-aware error bounds |
-| Nearly cancelling sums | Bound relative to sum of term magnitudes, not only the final answer |
-| Eigenvectors, Schur factors, repeated roots | Residuals, orthogonality, invariant subspaces, and permitted ordering/sign changes |
-| Unsupported NaN/Inf result | Fail explicitly, even if both sides emit it |
-| Ignored NaN storage | Compare as a protected category if payloads are outside the contract |
+| Accounting amounts and records | Exact decimal/fixed-point semantics, including rounding and scale |
+| Status, shape, discrete state | Exact |
+| Floating-point numerical outputs | Operation- and scale-aware bounds, with an explicit accepted domain |
+| Nearly cancelling sums | Bounds based on term magnitudes, not just the small final answer |
+| Eigenvectors or nonunique factors | Residuals, orthogonality, ordering/sign allowances, invariant subspaces |
+| Control-system traces | Values and state on a defined time/event grid; explicit timing policy |
+| Protected inputs and padding | Unchanged under the stated representation policy |
 
-Do not use a large constant absolute floor that allows “return zero” to pass for tiny results. Record maximum error relative to the chosen bound. Inspect whether a generous bound is hiding a defect. Bound justification is part of the report, not something to derive backward from the largest observed mismatch.
+Avoid a large absolute floor that lets zero pass for tiny results. Unsupported NaN/Inf results fail even if both sides agree. Never relax tolerances solely because a rewrite fails. Supplement the corpus with independent identities where valuable, and require representative broken candidates to be rejected.
 
-Use a few independent identities or hand-calculated anchors to catch shared adapter mistakes. These complement the oracle; they need not become a manually maintained expected-output suite for the whole legacy system.
+## 5. Triage and extend deliberately
 
-## 6. Run a corpus that can falsify the migration
+A mismatch report must resolve to the exact recorded call and both observations. Check capture/build identity, marshalling, state and event order, the translated algorithm, then the numerical policy. Retain reduced regression cases.
 
-Start with all mode branches, degenerate dimensions, zero coefficients, nontrivial rectangular cases, leading-dimension padding, safe errors, and specified input/output mutations. Add seeded cases spanning signs, magnitudes, structure, and cancellation. Seeded random coverage does not replace explicit branch and boundary coverage.
+An audit reruns the original on stored inputs when you need to check provenance or diagnose a difference. Capturing new scenarios or changing the reference requires a new baseline version. A fixed corpus supports a fixed coverage claim; keep the generator and legacy source available for future extensions.
 
-Prove the harness has teeth: compile or inject representative wrong behavior and require a failure. Examples include dropping a structural contribution, ignoring a mode, changing an input, returning zero, corrupting status/padding, and producing nonfinite output. A test that only checks identical outputs pass does not establish detection.
+Refine the skill after a real trial: record the failure, the focused correction, and its persistent validation. Report whether evaluation was same-agent or independently performed. Do not claim performance, universal equivalence, or production coverage without evidence.
 
-For every discrepancy:
+## Run this repository
 
-1. Save the exact case and both observations before editing code.
-2. Check build identity and the adapters first, then the translation, then the numerical policy.
-3. Reduce the case without losing the failure and retain it as a runnable regression.
-4. Explain any intentional contract difference in the report; do not silently bless it.
-5. Repair the responsible layer and rerun affected checks plus a fresh-seed campaign.
+The pilot translates SLICOT MB01UD into `hessenberg.Product` using Gonum BLAS. Its recorded caller is the Fortran harness, not a control application. There are no stateful application scenarios in this pilot.
 
-**Gate:** no unexplained mismatches in the declared domain; known defects are detected; failures are replayable.
+Everyday prerequisites: Go 1.24+, Python 3.10+, and Make. Go must have its Gonum dependency available (the first module download may require network access). Offline here means independent of legacy execution and libraries.
 
-## 7. Refine the skill from evidence
+```sh
+make verify
+uv run python3 oracle/run.py verify --case asymmetric-LT --report artifacts/replay.json
+```
 
-Use the skill to execute a real pilot. Record what was attempted, what failed or was insufficient, the narrow change made, and which check now demonstrates the improvement. Include environment recovery only if it is reusable and necessary. Do not grow the skill with hypothetical rules unrelated to observed decisions.
+`make verify` runs Go checks, baseline/comparator/adapter checks, three compiled candidate mutations, and all captured calls. It requires neither an initialized SLICOT submodule nor gfortran/OpenBLAS. Select one captured call with `verify --case ID`.
 
-Review the result from a fresh checkout/build. If an independent agent evaluation is authorized, give it the skill and raw task without the intended answer; otherwise describe the evaluation accurately as a same-agent trial and executable checks. Do not equate a metadata validator with behavioral acceptance.
+The checked-in baseline is `oracle/baselines/mb01ud-v1/`: a readable manifest and compressed call records. Reports go under ignored `artifacts/`; temporary binaries are removed automatically.
 
-Acceptance requires all of the following:
-
-- Reference provenance and a runnable build.
-- A documented boundary and compatibility mapping.
-- A replacement using the selected provider, with persistent checks for changed modules.
-- Passing deterministic and generated side-by-side cases over the stated domain.
-- Detection of known-bad candidates, malformed output, status errors, and storage changes.
-- A saved failure/success report and an exercised replay path.
-- Concrete skill refinements tied to trial evidence and explicit remaining limits.
-
-Stop at the authorized deliverable. Report Git state and publishing state separately from numerical acceptance. End plans with unresolved questions or “Unresolved questions: none.”
-
-## Run the SLICOT → Go demonstration
-
-From the repository root, prerequisites are Git, Go 1.24 or newer, Python 3.10 or newer, gfortran, and LP64 OpenBLAS with BLAS and LAPACK symbols. Python uses only the standard library. On macOS the runner can discover an existing Homebrew OpenBLAS; on Linux it uses pkg-config when available, then the system linker. If needed, set `FC` to the compiler executable and `ORACLE_BLAS_LIBS` to linker flags such as `-L/path/to/lib -lopenblas`. These flags are recorded. Installing prerequisites is a separate user/environment action.
+Capture and audit additionally require Git, gfortran, and LP64 OpenBLAS with BLAS/LAPACK. Initialize the pinned source first. Existing Homebrew/pkg-config installations are detected; `FC` and `ORACLE_BLAS_LIBS` can select an installed toolchain.
 
 ```sh
 git submodule update --init --recursive
-go test ./...
-go vet ./...
-uv run python3 -m unittest discover -s oracle -p 'test_*.py' -v
-uv run python3 oracle/run.py --seed 20260910 --random-cases 400 --report artifacts/acceptance.json
-uv run python3 oracle/run.py --seed 20260911 --random-cases 400 --report artifacts/fresh-seed.json
-uv run python3 oracle/run.py --replay artifacts/acceptance.json --case asymmetric-LT --report artifacts/replay.json
+uv run python3 oracle/run.py capture --output oracle/baselines/mb01ud-v2 --seed 20260912 --random-cases 400
+make audit
 ```
 
-Every oracle invocation rebuilds both binaries. The Python infrastructure checks also compile three deliberately broken candidates in a temporary directory without modifying production source. The commands exit nonzero for failed acceptance. Reports contain full replay inputs and outputs and are ignored by Git; retain them when investigating a failure.
+Capture refuses an existing output directory and never builds Go. Audit rechecks the default baseline using Fortran and never builds Go; select another with `audit --baseline PATH`. Ordinary verification never captures or refreshes data. Native tests are isolated under `make audit`.
 
-The translated operation is `hessenberg.Product`; the reference is `reference/SLICOT-Reference/src/MB01UD.f`. Read `docs/mb01ud-contract.md` for exact layout/error mapping and tolerance policy, and `docs/acceptance.md` for the completed trial evidence. This pilot uses Gonum BLAS; future routines requiring LAPACK must verify Gonum's coverage explicitly.
+Read `docs/mb01ud-contract.md` for API and numerical details and `docs/acceptance.md` for measured acceptance. Plans should end with unresolved questions or “Unresolved questions: none.”
 
-To invoke this repository's skill, ask: “Use $oracle-migration to migrate one bounded legacy routine and verify it against the original.” Its discoverable entrypoint is `.agents/skills/oracle-migration/SKILL.md`; no global installation is required.
+## Precedents
 
-## Inspiration and attribution
-
-The user-selected [Anthropic video, Claude Code modernizes a legacy COBOL codebase](https://youtu.be/OwMu0pyYZBc), describes analyzing an AWS mainframe demonstration and migrating functionality to Java, with documentation, planning, and iterative validation. Its public description was reviewed; this playbook does not claim a verified full transcript or quote specific video procedures. The executable numerical oracle, tolerance policy, and SLICOT-specific decisions here were developed and validated in this repository. SLICOT's license and source attribution are in `LICENSE-SLICOT` and `NOTICE`.
+- [Pace's Fortran-to-Python atmospheric-model rewrite](https://gmd.copernicus.org/articles/16/2719/2023/) captures inputs and outputs around computation units with Serialbox, then validates units and larger assembled components. [pyFV3](https://github.com/NOAA-GFDL/pyFV3) documents versioned serialized Fortran data and replay adapters.
+- [AWS's mainframe modernization workflow](https://aws.amazon.com/blogs/migration-and-modernization/automate-the-building-testing-and-deployment-processes-of-aws-mainframe-modernization-with-aws-blu-age/) separates an initial recording of legacy reference data from repeated replay and comparison. [CardDemo](https://github.com/aws-samples/aws-mainframe-modernization-carddemo) is a public credit-card demonstration application.
+- [OpenFAST](https://openfast.readthedocs.io/en/main/source/testing/regression_test.html) compares simulation results with stored baselines and preserves baseline files during verification.
+- [Simulink baseline testing](https://www.mathworks.com/help/sltest/functional-baseline-multirelease-and-parallel-tests.html) compares simulations with saved outputs. These last two are numerical baseline practices, not claims about specific language rewrites.
+- The user-selected [Anthropic COBOL modernization video](https://youtu.be/OwMu0pyYZBc) motivated the demonstration. Its public description was reviewed, not its full transcript.
