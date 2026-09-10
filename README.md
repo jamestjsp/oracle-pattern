@@ -4,6 +4,12 @@ A skill and playbook project demonstrating how to migrate selected legacy numeri
 
 The reference is [SLICOT](https://github.com/SLICOT/SLICOT-Reference), included as a pinned Git submodule at `reference/SLICOT-Reference`. The planned Go implementation will use Gonum as its BLAS/LAPACK provider.
 
+## Demonstration reference
+
+[Claude Code modernizes a legacy COBOL codebase](https://youtu.be/OwMu0pyYZBc) is the user-selected reference for developing the skill and playbook. This project applies the legacy-modernization theme to selected SLICOT subroutines and a Go/Gonum replacement.
+
+The video transcript has not yet been reviewed; the workflow below records this project's proposed approach, not a verified summary of the video.
+
 ## Principle
 
 Battle-tested code is executable documentation. Run the original and replacement implementations on the same inputs, compare their observable behavior, and retain reproducible evidence before accepting a migration.
